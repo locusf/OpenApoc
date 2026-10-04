@@ -226,28 +226,42 @@ target_link_libraries(OpenApoc_GameState PUBLIC OpenApoc_Lua)
 # the path
 target_include_directories(OpenApoc_GameState PUBLIC ${CMAKE_BINARY_DIR})
 
+set(OPENAPOC_GAMESTATE_SERIALIZE_GEN "$<TARGET_FILE:OpenApoc_GamestateSerializeGen>")
+set(OPENAPOC_LUAGAMESTATE_SUPPORT_GEN "$<TARGET_FILE:OpenApoc_LuaGamestateSupportGen>")
+set(OPENAPOC_GAMESTATE_SERIALIZE_GEN_DEPS OpenApoc_GamestateSerializeGen)
+set(OPENAPOC_LUAGAMESTATE_SUPPORT_GEN_DEPS OpenApoc_LuaGamestateSupportGen)
+
+if(CMAKE_CROSSCOMPILING AND OPENAPOC_HOST_TOOLS_DIR)
+	set(OPENAPOC_GAMESTATE_SERIALIZE_GEN
+		"${OPENAPOC_HOST_TOOLS_DIR}/OpenApoc_GamestateSerializeGen")
+	set(OPENAPOC_LUAGAMESTATE_SUPPORT_GEN
+		"${OPENAPOC_HOST_TOOLS_DIR}/OpenApoc_LuaGamestateSupportGen")
+	set(OPENAPOC_GAMESTATE_SERIALIZE_GEN_DEPS)
+	set(OPENAPOC_LUAGAMESTATE_SUPPORT_GEN_DEPS)
+endif()
+
 add_custom_command(OUTPUT
 		gamestate_serialize_generated.h
 		gamestate_serialize_generated.cpp
 		COMMAND
-		$<TARGET_FILE:OpenApoc_GamestateSerializeGen>
+		${OPENAPOC_GAMESTATE_SERIALIZE_GEN}
 		-x ${CMAKE_SOURCE_DIR}/game/state/gamestate_serialize.xml
 		-h gamestate_serialize_generated.h
 		-o gamestate_serialize_generated.cpp
 		DEPENDS
-		OpenApoc_GamestateSerializeGen
+		${OPENAPOC_GAMESTATE_SERIALIZE_GEN_DEPS}
 		${CMAKE_SOURCE_DIR}/game/state/gamestate_serialize.xml)
 
 add_custom_command(OUTPUT
 		luagamestate_support_generated.h
 		luagamestate_support_generated.cpp
 		COMMAND
-		$<TARGET_FILE:OpenApoc_LuaGamestateSupportGen>
+		${OPENAPOC_LUAGAMESTATE_SUPPORT_GEN}
 		-x ${CMAKE_SOURCE_DIR}/game/state/gamestate_serialize.xml
 		-h luagamestate_support_generated.h
 		-o luagamestate_support_generated.cpp
 		DEPENDS
-		OpenApoc_LuaGamestateSupportGen
+		${OPENAPOC_LUAGAMESTATE_SUPPORT_GEN_DEPS}
 		${CMAKE_SOURCE_DIR}/game/state/gamestate_serialize.xml)
 
 add_custom_target(generated-source
