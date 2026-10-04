@@ -1,5 +1,7 @@
 #include "serialization_xml.h"
 
+#include <memory>
+
 bool readXml(std::istream &in, StateDefinition &state)
 {
 	pugi::xml_document doc;
