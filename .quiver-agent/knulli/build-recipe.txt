@@ -1,3 +1,110 @@
 set -euo pipefail
 set -euo pipefail
-bash /source/.quiver-agent/knulli/build-recipe.txt
+rm -rf /tmp/game /tmp/physfs-build /tmp/physfs-prefix /tmp/host-tools
+cp -a /source /tmp/game
+cd /tmp/game
+
+mkdir -p /tmp/host-tools
+HOST_CXX=${HOST_CXX:-g++}
+HOST_CXXFLAGS=${HOST_CXXFLAGS:-}
+$HOST_CXX -std=c++17 $HOST_CXXFLAGS \
+  -I. -Itools/code_generators -Idependencies/pugixml/src \
+  tools/code_generators/gamestate_serialize_gen/main.cpp \
+  tools/code_generators/serialization_xml.cpp \
+  dependencies/pugixml/src/pugixml.cpp \
+  -lboost_program_options \
+  -o /tmp/host-tools/OpenApoc_GamestateSerializeGen
+$HOST_CXX -std=c++17 $HOST_CXXFLAGS \
+  -I. -Itools/code_generators -Idependencies/pugixml/src \
+  tools/code_generators/luagamestate_support_gen/main.cpp \
+  tools/code_generators/serialization_xml.cpp \
+  dependencies/pugixml/src/pugixml.cpp \
+  -lboost_program_options \
+  -o /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+
+mkdir -p /tmp/physfs-build /tmp/physfs-prefix/lib
+physfs_defs=(
+  -DPHYSFS_SUPPORTS_7Z=0
+  -DPHYSFS_SUPPORTS_GRP=0
+  -DPHYSFS_SUPPORTS_HOG=0
+  -DPHYSFS_SUPPORTS_MVL=0
+  -DPHYSFS_SUPPORTS_QPAK=0
+  -DPHYSFS_SUPPORTS_SLB=0
+  -DPHYSFS_SUPPORTS_WAD=0
+  -DPHYSFS_ISO9660_LOWERCASE=1
+  -DPHYSFS_ISO9660_OPENAPOC_WORKAROUND=1
+)
+physfs_srcs=(
+  dependencies/physfs/src/physfs.c
+  dependencies/physfs/src/physfs_byteorder.c
+  dependencies/physfs/src/physfs_unicode.c
+  dependencies/physfs/src/physfs_platform_posix.c
+  dependencies/physfs/src/physfs_platform_unix.c
+  dependencies/physfs/src/physfs_platform_windows.c
+  dependencies/physfs/src/physfs_platform_os2.c
+  dependencies/physfs/src/physfs_platform_qnx.c
+  dependencies/physfs/src/physfs_archiver_dir.c
+  dependencies/physfs/src/physfs_archiver_unpacked.c
+  dependencies/physfs/src/physfs_archiver_grp.c
+  dependencies/physfs/src/physfs_archiver_hog.c
+  dependencies/physfs/src/physfs_archiver_7z.c
+  dependencies/physfs/src/physfs_archiver_mvl.c
+  dependencies/physfs/src/physfs_archiver_qpak.c
+  dependencies/physfs/src/physfs_archiver_wad.c
+  dependencies/physfs/src/physfs_archiver_zip.c
+  dependencies/physfs/src/physfs_archiver_slb.c
+  dependencies/physfs/src/physfs_archiver_iso9660.c
+  dependencies/physfs/src/physfs_archiver_vdf.c
+)
+for src in "${physfs_srcs[@]}"; do
+  obj="/tmp/physfs-build/$(basename "${src%.c}").o"
+  "${CC:-aarch64-linux-gnu-gcc}" ${CFLAGS:-} -Idependencies/physfs/src "${physfs_defs[@]}" -c "$src" -o "$obj"
+done
+"${AR:-aarch64-linux-gnu-ar}" rcs /tmp/physfs-prefix/lib/libphysfs.a /tmp/physfs-build/*.o
+
+cmake -S . -B build -GNinja \
+  -DCMAKE_TOOLCHAIN_FILE=/opt/cross/aarch64.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_LAUNCHER=OFF \
+  -DENABLE_TESTS=OFF \
+  -DEXTRACT_DATA=OFF \
+  -DOPENAPOC_HOST_TOOLS_DIR=/tmp/host-tools \
+  -DUSE_SYSTEM_PHYSFS=ON \
+  -DPHYSFS_LIBRARY=/tmp/physfs-prefix/lib/libphysfs.a \
+  -DPHYSFS_INCLUDE_DIR=/tmp/game/dependencies/physfs/src
+
+cmake --build build --parallel
+
+mkdir -p /output/package/bin /output/package/licenses
+install -Dm755 build/bin/OpenApoc /output/package/bin/OpenApoc
+
+for f in README.md README_HOTKEYS.txt portable.txt; do
+  if [ -f "$f" ]; then
+    cp -a "$f" /output/package/
+  fi
+done
+
+if [ -d data ]; then
+  cp -a data /output/package/
+fi
+
+find . -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -print0 |
+while IFS= read -r -d '' f; do
+  dest="/output/package/licenses/${f#./}"
+  mkdir -p "$(dirname "$dest")"
+  cp -a "$f" "$dest"
+done
+
+cat > /output/package/launch.sh <<'EOF'
+#!/bin/sh
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR"
+if [ "${SDL_GAMECONTROLLERCONFIG+x}" = x ]; then
+  export SDL_GAMECONTROLLERCONFIG
+fi
+exec ./bin/OpenApoc "$@"
+EOF
+
+chmod +x /output/package/launch.sh /output/package/bin/OpenApoc
+file /output/package/bin/OpenApoc
