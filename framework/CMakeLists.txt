@@ -188,7 +188,7 @@ add_library(OpenApoc_Framework STATIC
 	${FILESYSTEM_SOURCE_FILES} ${FILESYSTEM_HEADER_FILES})
 
 target_compile_definitions(OpenApoc_Framework PUBLIC
-		"-DRENDERERS=\"GLES_3_0:GL_2_0\"")
+		"-DRENDERERS=\"GLES_3_0\"")
 
 if(APPLE)
 	target_compile_definitions(OpenApoc_Framework PRIVATE
@@ -199,7 +199,9 @@ if(APPLE)
 elseif(WIN32)
 	target_compile_definitions(OpenApoc_Framework PRIVATE "-DGLESWRAP_PLATFORM_WGL")
 else()
-	target_compile_definitions(OpenApoc_Framework PRIVATE "-DGLESWRAP_PLATFORM_GLX")
+	target_compile_definitions(OpenApoc_Framework PRIVATE
+			"-DGLESWRAP_PLATFORM_EGL"
+			"-DOPENAPOC_GLES")
 endif()
 
 # We use boost::locale for utf conversions and boost::filesystem for
@@ -263,8 +265,8 @@ find_package(OpenGL)
 if (NOT OPENGL_FOUND)
 		message(WARNING "OpenGL not found for GL_2_0 renderer")
 else()
-	target_link_libraries(OpenApoc_Framework PUBLIC ${OPENGL_gl_LIBRARY})
-	target_link_libraries(OpenApoc_Framework PUBLIC ${OPENGL_glx_LIBRARY})
+	target_link_libraries(OpenApoc_Framework PUBLIC EGL GLESv2)
+	# GLX is not available on framebuffer/EGL handheld targets
 	target_include_directories(OpenApoc_Framework PUBLIC ${OPENGL_INCLUDE_DIR})
 endif()
 target_link_libraries(OpenApoc_Framework PUBLIC OpenApoc_Library)

@@ -861,7 +861,7 @@ void Framework::displayInitialise()
 	SDL_ShowCursor(SDL_DISABLE);
 
 	p->registeredRenderers["GLES_3_0"].reset(getGLES30RendererFactory());
-#ifndef __ANDROID__ // GL2 is not available on Android
+#if !defined(__ANDROID__) && !defined(GLESWRAP_PLATFORM_EGL) // GL2 is not available on Android or EGL-only targets
 	p->registeredRenderers["GL_2_0"].reset(getGL20RendererFactory());
 #endif
 

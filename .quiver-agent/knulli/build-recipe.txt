@@ -7,8 +7,6 @@ mkdir -p host-tools physfs-build
 : "${AR:=aarch64-linux-gnu-ar}"
 : "${RANLIB:=aarch64-linux-gnu-ranlib}"
 
-# Provide host-native generator commands as Python scripts so the cross build
-# does not need an x86_64 C++ compiler.
 cat > host-tools/OpenApoc_GamestateSerializeGen <<'PY'
 #!/usr/bin/env python3
 import argparse
@@ -370,8 +368,6 @@ if __name__ == "__main__":
 PY
 chmod +x host-tools/OpenApoc_LuaGamestateSupportGen
 
-# Build PhysFS as a target static library without invoking its bundled CMake,
-# which requires a newer CMake than the container provides.
 physfs_defs=(
   -DPHYSFS_SUPPORTS_7Z=0
   -DPHYSFS_SUPPORTS_GRP=0
@@ -414,7 +410,9 @@ done
 
 cmake -S . -B build -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=/opt/cross/aarch64.cmake \
-  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_BUILD_TYPE=Quick \
+  -DCMAKE_C_FLAGS_QUICK='-O1 -g0' \
+  -DCMAKE_CXX_FLAGS_QUICK='-O1 -g0' \
   -DCMAKE_INSTALL_PREFIX=/usr \
   -DBUILD_LAUNCHER=OFF \
   -DBUILD_EXTRACTOR=OFF \
@@ -423,22 +421,16 @@ cmake -S . -B build -G Ninja \
   -DUSE_SYSTEM_QT=OFF \
   -DENABLE_TESTS=OFF \
   -DEXTRACT_DATA=OFF \
-  -DUSE_PCH=OFF \
+  -DUSE_PCH=ON \
   -DENABLE_BACKTRACE=OFF \
   -DBoost_NO_BOOST_CMAKE=ON \
   -DUSE_SYSTEM_PHYSFS=ON \
   -DPHYSFS_LIBRARY="$PWD/physfs-build/libphysfs.a" \
   -DPHYSFS_INCLUDE_DIR="$PWD/dependencies/physfs/src" \
   -DOPENAPOC_HOST_TOOLS_DIR="$PWD/host-tools"
-cmake --build build -j"$(nproc)"
+cmake --build build --target OpenApoc -j"$(nproc)"
 mkdir -p /output/package/bin /output/package/licenses
-mapfile -t game_bins < <(find build -type f -perm -111 \( -name 'OpenApoc' -o -name 'openapoc' \) | sort)
-if [ "${#game_bins[@]}" -eq 0 ]; then
-  echo "No OpenApoc executable found" >&2
-  find build -maxdepth 4 -type f -perm -111 -print >&2 || true
-  exit 1
-fi
-install -Dm755 "${game_bins[0]}" /output/package/bin/OpenApoc
+install -Dm755 build/bin/OpenApoc /output/package/bin/OpenApoc
 file /output/package/bin/OpenApoc
 cp -a README.md README_HOTKEYS.txt portable.txt /output/package/
 if [ -d data ]; then
