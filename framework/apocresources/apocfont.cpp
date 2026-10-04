@@ -5,8 +5,7 @@
 #include "framework/framework.h"
 #include "framework/logger.h"
 #include "library/sp.h"
-
-#include <boost/locale.hpp>
+#include "library/strings.h"
 
 namespace OpenApoc
 {
@@ -104,7 +103,7 @@ sp<BitmapFont> ApocalypseFont::loadFont(const UString &fontDescPath)
 			continue;
 		}
 
-		auto pointString = boost::locale::conv::utf_to_utf<char32_t>(glyphString.c_str());
+		auto pointString = to_u32string(glyphString);
 
 		if (pointString.length() != 1)
 		{

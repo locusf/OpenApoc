@@ -1,0 +1,49 @@
+set -euo pipefail
+set -euxo pipefail
+rm -rf /tmp/game /output/package
+cp -a /source /tmp/game
+cd /tmp/game
+cmake -S . -B build -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=/opt/cross/aarch64.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_LAUNCHER=OFF \
+  -DUSE_SYSTEM_QT=OFF \
+  -DENABLE_TESTS=OFF \
+  -DEXTRACT_DATA=OFF \
+  -DUSE_PCH=OFF \
+  -DENABLE_BACKTRACE=OFF \
+  -DBoost_NO_BOOST_CMAKE=ON
+cmake --build build -j"$(nproc)"
+mkdir -p /output/package/bin /output/package/licenses
+mapfile -t game_bins < <(find build -type f -perm -111 \( -name 'OpenApoc' -o -name 'openapoc' \) | sort)
+if [ "${#game_bins[@]}" -eq 0 ]; then
+  echo "No OpenApoc executable found" >&2
+  find build -maxdepth 4 -type f -perm -111 -print >&2 || true
+  exit 1
+fi
+cp -a "${game_bins[0]}" /output/package/bin/OpenApoc
+file /output/package/bin/OpenApoc
+cp -a README.md README_HOTKEYS.txt portable.txt /output/package/
+if [ -d data ]; then
+  cp -a data /output/package/
+fi
+find . -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -print0 | while IFS= read -r -d '' f; do
+  dest="/output/package/licenses/${f#./}"
+  mkdir -p "$(dirname "$dest")"
+  cp -a "$f" "$dest"
+done
+cat > /output/package/README-KNULLI.txt <<'EOF'
+OpenApoc ARM64 package for Knulli.
+
+This package includes the open-source engine and repository data only.
+Original X-COM Apocalypse commercial game assets are not bundled.
+Place any required original game files where OpenApoc expects them before running.
+EOF
+cat > /output/package/launch.sh <<'EOF'
+#!/bin/sh
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR"
+exec ./bin/OpenApoc "$@"
+EOF
+chmod +x /output/package/launch.sh /output/package/bin/OpenApoc

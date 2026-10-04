@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <clocale>
+#include <cstdlib>
 #include <fstream>
 #include <list>
 #include <map>
@@ -43,8 +45,6 @@
 // Use physfs to get prefs dir
 #include <physfs.h>
 
-// Boost locale for setting the system locale
-#include <boost/locale.hpp>
 
 using namespace OpenApoc;
 
@@ -198,40 +198,52 @@ Framework::Framework(const UString programName, bool createWindow)
 
 	LogInfo("Setting up locale \"{0}\"", desiredLanguageName);
 
-	boost::locale::generator gen;
-
 	std::vector<UString> resourcePaths;
 	resourcePaths.push_back(Options::cdPathOption.get());
 	resourcePaths.push_back(Options::dataPathOption.get());
 
-	for (auto &path : resourcePaths)
+	UString localeName = desiredLanguageName;
+	if (localeName.empty())
 	{
-		auto langPath = path + "/languages";
-		LogInfo("Adding \"{0}\" to language path", langPath);
-		gen.add_messages_path(langPath);
+		const char *systemLocale = std::getenv("LC_ALL");
+		if (!systemLocale || !*systemLocale)
+		{
+			systemLocale = std::getenv("LANG");
+		}
+		if (systemLocale && *systemLocale)
+		{
+			localeName = systemLocale;
+		}
+		else
+		{
+			const char *activeLocale = std::setlocale(LC_ALL, "");
+			if (activeLocale)
+			{
+				localeName = activeLocale;
+			}
+		}
 	}
 
-	std::vector<UString> translationDomains = {"openapoc"};
-	for (auto &domain : translationDomains)
+	UString localeLang;
+	UString localeCountry;
+	if (!localeName.empty())
 	{
-		LogInfo("Adding \"{0}\" to translation domains", domain);
-		gen.add_messages_domain(domain);
+		auto langEnd = localeName.find_first_of("_-.@");
+		localeLang = localeName.substr(0, langEnd);
+		if (langEnd != UString::npos && (localeName[langEnd] == '_' || localeName[langEnd] == '-'))
+		{
+			auto countryStart = langEnd + 1;
+			auto countryEnd = localeName.find_first_of(".@", countryStart);
+			localeCountry = localeName.substr(countryStart, countryEnd - countryStart);
+		}
+	}
+	if (localeLang.empty())
+	{
+		localeLang = "en";
 	}
 
-	std::locale loc = gen(desiredLanguageName);
-	std::locale::global(loc);
-
-	auto localeName = std::use_facet<boost::locale::info>(loc).name();
-	auto localeLang = std::use_facet<boost::locale::info>(loc).language();
-	auto localeCountry = std::use_facet<boost::locale::info>(loc).country();
-	auto localeVariant = std::use_facet<boost::locale::info>(loc).variant();
-	auto localeEncoding = std::use_facet<boost::locale::info>(loc).encoding();
-	auto isUTF8 = std::use_facet<boost::locale::info>(loc).utf8();
-
-	LogInfo("Locale info: Name \"{0}\" language \"{1}\" country \"{2}\" variant \"{3}\" encoding "
-	        "\"{4}\" utf8:{5}",
-	        localeName.c_str(), localeLang.c_str(), localeCountry.c_str(), localeVariant.c_str(),
-	        localeEncoding.c_str(), isUTF8 ? "true" : "false");
+	LogInfo("Locale info: Name \"{0}\" language \"{1}\" country \"{2}\"",
+	        localeName.c_str(), localeLang.c_str(), localeCountry.c_str());
 
 	this->language = localeLang;
 	this->languageCountry = localeCountry;
