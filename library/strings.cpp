@@ -1,56 +1,29 @@
 #include "library/strings.h"
 #include "library/strings_format.h"
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/locale/encoding_utf.hpp>
+#include <boost/locale/message.hpp>
 #include <cctype>
-#include <codecvt>
-#include <locale>
-#include <stdexcept>
 
 namespace OpenApoc
 {
 
 UString tr(const UString &str, const UString domain)
 {
-	(void)domain;
-	return UString(str);
+	return UString(boost::locale::translate(str).str(domain));
 }
 
 U32String to_u32string(const UStringView str)
 {
-	std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> converter;
-	try
-	{
-		return converter.from_bytes(str.data(), str.data() + str.size());
-	}
-	catch (const std::range_error &)
-	{
-		U32String fallback;
-		fallback.reserve(str.size());
-		for (unsigned char c : str)
-		{
-			fallback.push_back(static_cast<char32_t>(c));
-		}
-		return fallback;
-	}
+	// FIXME: Boost api doesn't work with string views yet?
+	auto string_copy = UString(str);
+	return boost::locale::conv::utf_to_utf<char32_t>(string_copy);
 }
 
 UString to_ustring(const std::u32string_view str)
 {
-	std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> converter;
-	try
-	{
-		return converter.to_bytes(str.data(), str.data() + str.size());
-	}
-	catch (const std::range_error &)
-	{
-		UString fallback;
-		fallback.reserve(str.size());
-		for (char32_t c : str)
-		{
-			fallback.push_back(c <= 0x7f ? static_cast<char>(c) : '?');
-		}
-		return fallback;
-	}
+	auto string_copy = U32String(str);
+	return boost::locale::conv::utf_to_utf<char>(string_copy);
 }
 
 char32_t to_char32(const char c)

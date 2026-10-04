@@ -3,19 +3,19 @@
   "upstream": "OpenApoc/OpenApoc",
   "source_ref": "ebeefb07f907f7c93bcfdd761c6875d1c6e0465b",
   "profile_hash": "f7a3813320de94309462c587268bf97efb7636b5655a876178880dcaccbf0819",
-  "status": "tool-budget-exhausted",
+  "status": "blocked",
   "runtime_verified": false,
   "round": 1,
   "attempts": 1,
   "tool_calls": 63,
   "last_build": {
     "success": false,
-    "error": "Source edits require a new build."
+    "error": "Original translation and locale behavior restored; rebuild with corrected multiarch toolchain required."
   },
   "last_tool_error": {
     "tool": "attempt_build",
     "error": "Agent tool budget exhausted."
   },
-  "summary": "I\u2019m blocked by this round\u2019s tool budget and can\u2019t complete another build attempt in-session.\n\nCurrent persisted source changes\n- Lowered root CMake minimum from 3.30 to 3.22.\n- Removed the hard Boost.Locale link requirement from `library/CMakeLists.txt`.\n- Changed `framework/CMakeLists.txt` Boost components from `locale program_options` to `program_options`.\n- Replaced Boost.Locale usage in:\n  - `library/strings.cpp`\n  - `framework/apocresources/apocfont.cpp`\n  - `framework/framework.cpp`\n  with non-Boost fallbacks / simpler locale handling.\n\nLatest confirmed blocker before those patches\n- CMake failed on missing Boost `locale` for ARM64 cross-build:\n  - `Could NOT find Boost (missing: locale) (found version \"1.74.0\")`\n\nWhat remains unverified\n- I could not rerun the build after the locale-removal patches because the agent tool budget expired.\n- I also could not complete the post-patch controller citation refresh required by the build tool.\n- Graphics compatibility still needs follow-up: earlier source inspection showed Linux defaults to `GLESWRAP_PLATFORM_GLX` in `framework/CMakeLists.txt`, which is a likely mismatch for this framebuffer-only, no-X11/no-Wayland handheld unless there is an EGL path to switch to.\n\nController status from the completed audit so far\n- Support should currently be treated as unsupported on this handheld.\n- Reason: I confirmed keyboard event plumbing in the framework, but did not complete a verified Linux handheld controller binding audit against the RG CubeXX mapping.\n- I cannot claim native gamepad support from the current source evidence.\n\nBest next step in a fresh continuation\n1. Re-run the cross-build with the now-persisted locale patches.\n2. If build advances, inspect/patch the GLX platform selection for EGL if supported by the renderer wrapper.\n3. Refresh exact current input line citations and finalize controller report.\n4. Package with `launch.sh`, notices, and non-commercial bundled repo data only.\n\nIf you continue in a fresh agent round, it should pick up from this checkpoint.",
-  "previous_commit": "38768603719fe9c7765b566e98c43be198e65358"
+  "summary": "The previous agent incorrectly removed Boost.Locale and replaced translations/Unicode handling with lossy fallbacks. Those five source files have been restored to upstream. Keep application semantics intact. The launcher build image now supplies Boost and corrects CMake multiarch library discovery, with a link smoke test. Retain the root CMake minimum change for now, use the saved build recipe against the corrected toolchain, and diagnose remaining errors without removing functionality.",
+  "previous_commit": "d7fad61bdeabe9cf4d758d4f2feef948c2e02fe1"
 }
