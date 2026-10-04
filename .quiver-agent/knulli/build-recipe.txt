@@ -1,29 +1,253 @@
 set -euo pipefail
 set -euo pipefail
-rm -rf /tmp/game /tmp/physfs-build /tmp/physfs-prefix /tmp/host-tools
+
+rm -rf /tmp/game /tmp/physfs-build /tmp/physfs-prefix /tmp/host-tools /tmp/host-tools-smoke /tmp/native-probe
 cp -a /source /tmp/game
 cd /tmp/game
 
-mkdir -p /tmp/host-tools
-HOST_CXX=${HOST_CXX:-g++}
-HOST_CXXFLAGS=${HOST_CXXFLAGS:-}
-$HOST_CXX -std=c++17 $HOST_CXXFLAGS \
-  -I. -Itools/code_generators -Idependencies/pugixml/src \
-  tools/code_generators/gamestate_serialize_gen/main.cpp \
-  tools/code_generators/serialization_xml.cpp \
-  dependencies/pugixml/src/pugixml.cpp \
-  -lboost_program_options \
-  -o /tmp/host-tools/OpenApoc_GamestateSerializeGen
-$HOST_CXX -std=c++17 $HOST_CXXFLAGS \
-  -I. -Itools/code_generators -Idependencies/pugixml/src \
-  tools/code_generators/luagamestate_support_gen/main.cpp \
-  tools/code_generators/serialization_xml.cpp \
-  dependencies/pugixml/src/pugixml.cpp \
-  -lboost_program_options \
-  -o /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+mkdir -p /tmp/host-tools /tmp/physfs-build /tmp/physfs-prefix/lib /tmp/host-tools-smoke /tmp/native-probe
 
-mkdir -p /tmp/physfs-build /tmp/physfs-prefix/lib
-physfs_defs=(
+read -r -a TARGET_CC_ARR <<< "${CC:-aarch64-linux-gnu-gcc}"
+read -r -a TARGET_CXX_ARR <<< "${CXX:-aarch64-linux-gnu-g++}"
+read -r -a TARGET_CFLAGS_ARR <<< "${CFLAGS:-}"
+read -r -a TARGET_CXXFLAGS_ARR <<< "${CXXFLAGS:-}"
+
+FOUND_NATIVE_CXX=
+FOUND_QEMU=
+QEMU_PREFIX=
+HOST_TOOLS_READY=0
+LAST_NATIVE_LOG=/tmp/native-probe/last-native.log
+LAST_ARM64_LOG=/tmp/native-probe/last-arm64.log
+LAST_QEMU_LOG=/tmp/native-probe/last-qemu.log
+CANDIDATES_LOG=/tmp/native-probe/candidates.log
+: > "$LAST_NATIVE_LOG"
+: > "$LAST_ARM64_LOG"
+: > "$LAST_QEMU_LOG"
+: > "$CANDIDATES_LOG"
+
+make_copygen() {
+  local src_h="$1"
+  local src_cpp="$2"
+  local out="$3"
+  cat > "$out" <<EOF
+#!/bin/sh
+set -eu
+SRC_H='$src_h'
+SRC_CPP='$src_cpp'
+OUT_H=
+OUT_CPP=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -x)
+      shift 2
+      ;;
+    -h)
+      OUT_H="\$2"
+      shift 2
+      ;;
+    -o)
+      OUT_CPP="\$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+[ -n "\${OUT_H}" ]
+[ -n "\${OUT_CPP}" ]
+cp "\$SRC_H" "\$OUT_H"
+cp "\$SRC_CPP" "\$OUT_CPP"
+EOF
+  chmod +x "$out"
+}
+
+build_native_gen() {
+  local compiler="$1"
+  local main_src="$2"
+  local out_bin="$3"
+  "$compiler" -x c++ -std=c++17 \
+    -I. -Itools/code_generators -Idependencies/pugixml/src \
+    "$main_src" tools/code_generators/serialization_xml.cpp dependencies/pugixml/src/pugixml.cpp \
+    -lboost_program_options -lstdc++ \
+    -o "$out_bin"
+}
+
+build_arm64_gen() {
+  local main_src="$1"
+  local out_bin="$2"
+  "${TARGET_CXX_ARR[@]}" "${TARGET_CXXFLAGS_ARR[@]}" -std=c++17 \
+    -I. -Itools/code_generators -Idependencies/pugixml/src \
+    "$main_src" tools/code_generators/serialization_xml.cpp dependencies/pugixml/src/pugixml.cpp \
+    -Wl,-rpath,/usr/lib/aarch64-linux-gnu -Wl,-rpath,/lib/aarch64-linux-gnu \
+    -lboost_program_options \
+    -o "$out_bin"
+}
+
+smoke_generator() {
+  local exe=("$@")
+  rm -f /tmp/host-tools-smoke/test.h /tmp/host-tools-smoke/test.cpp
+  "${exe[@]}" -x game/state/gamestate_serialize.xml -h /tmp/host-tools-smoke/test.h -o /tmp/host-tools-smoke/test.cpp >/tmp/host-tools-smoke/stdout.log 2>/tmp/host-tools-smoke/stderr.log
+  test -s /tmp/host-tools-smoke/test.h
+  test -s /tmp/host-tools-smoke/test.cpp
+}
+
+probe_native_compiler() {
+  local compiler="$1"
+  cat > /tmp/native-probe/probe.cpp <<'EOF'
+#include <iostream>
+int main(){ std::cout << "ok\n"; return 0; }
+EOF
+  "$compiler" -x c++ -std=c++17 /tmp/native-probe/probe.cpp -lstdc++ -o /tmp/native-probe/probe.bin >>"$LAST_NATIVE_LOG" 2>&1 && /tmp/native-probe/probe.bin >>"$LAST_NATIVE_LOG" 2>&1
+}
+
+add_path() {
+  local p="$1"
+  [ -n "$p" ] || return 0
+  [ -x "$p" ] || return 0
+  if [ -z "${SEEN[$p]+x}" ]; then
+    CANDIDATES+=("$p")
+    SEEN[$p]=1
+  fi
+}
+
+GS_H=$(find . -type f -name gamestate_serialize_generated.h -print -quit || true)
+GS_CPP=$(find . -type f -name gamestate_serialize_generated.cpp -print -quit || true)
+LUA_H=$(find . -type f -name luagamestate_support_generated.h -print -quit || true)
+LUA_CPP=$(find . -type f -name luagamestate_support_generated.cpp -print -quit || true)
+if [ -n "$GS_H" ] && [ -n "$GS_CPP" ] && [ -n "$LUA_H" ] && [ -n "$LUA_CPP" ]; then
+  make_copygen "/tmp/game/${GS_H#./}" "/tmp/game/${GS_CPP#./}" /tmp/host-tools/OpenApoc_GamestateSerializeGen
+  make_copygen "/tmp/game/${LUA_H#./}" "/tmp/game/${LUA_CPP#./}" /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+  if smoke_generator /tmp/host-tools/OpenApoc_GamestateSerializeGen && smoke_generator /tmp/host-tools/OpenApoc_LuaGamestateSupportGen; then
+    HOST_TOOLS_READY=1
+  fi
+fi
+
+if [ "$HOST_TOOLS_READY" -eq 0 ]; then
+  if build_arm64_gen tools/code_generators/gamestate_serialize_gen/main.cpp /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 >>"$LAST_ARM64_LOG" 2>&1 && \
+     build_arm64_gen tools/code_generators/luagamestate_support_gen/main.cpp /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64 >>"$LAST_ARM64_LOG" 2>&1; then
+    if smoke_generator /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 && \
+       smoke_generator /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64; then
+      ln -sf /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 /tmp/host-tools/OpenApoc_GamestateSerializeGen
+      ln -sf /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64 /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+      HOST_TOOLS_READY=1
+    fi
+  fi
+fi
+
+if [ "$HOST_TOOLS_READY" -eq 0 ]; then
+  declare -A QSEEN=()
+  QCANDIDATES=()
+  for name in qemu-aarch64 qemu-aarch64-static; do
+    p=$(command -v "$name" 2>/dev/null || true)
+    if [ -n "$p" ] && [ -z "${QSEEN[$p]+x}" ]; then QCANDIDATES+=("$p"); QSEEN[$p]=1; fi
+  done
+  shopt -s nullglob
+  for p in /usr/bin/qemu-aarch64 /usr/bin/qemu-aarch64-static /usr/local/bin/qemu-aarch64 /usr/local/bin/qemu-aarch64-static /opt/*/bin/qemu-aarch64 /opt/*/bin/qemu-aarch64-static; do
+    if [ -z "${QSEEN[$p]+x}" ]; then QCANDIDATES+=("$p"); QSEEN[$p]=1; fi
+  done
+  shopt -u nullglob
+  for q in "${QCANDIDATES[@]}"; do
+    [ -x "$q" ] || continue
+    FOUND_QEMU="$q"
+    if smoke_generator "$q" /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 && \
+       smoke_generator "$q" /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64; then
+      QEMU_PREFIX=
+      break
+    fi
+    for prefix in /usr/aarch64-linux-gnu /usr/aarch64-linux-gnu/libc /usr /; do
+      if smoke_generator "$q" -L "$prefix" /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 && \
+         smoke_generator "$q" -L "$prefix" /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64; then
+        QEMU_PREFIX="$prefix"
+        break 2
+      fi
+    done
+    cp -f /tmp/host-tools-smoke/stderr.log "$LAST_QEMU_LOG" || true
+  done
+  if [ -n "$FOUND_QEMU" ]; then
+    if [ -n "$QEMU_PREFIX" ]; then
+      cat > /tmp/host-tools/OpenApoc_GamestateSerializeGen <<EOF
+#!/bin/sh
+exec "$FOUND_QEMU" -L "$QEMU_PREFIX" /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 "\$@"
+EOF
+      cat > /tmp/host-tools/OpenApoc_LuaGamestateSupportGen <<EOF
+#!/bin/sh
+exec "$FOUND_QEMU" -L "$QEMU_PREFIX" /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64 "\$@"
+EOF
+      chmod +x /tmp/host-tools/OpenApoc_GamestateSerializeGen /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+      HOST_TOOLS_READY=1
+    elif smoke_generator "$FOUND_QEMU" /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 && \
+         smoke_generator "$FOUND_QEMU" /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64; then
+      cat > /tmp/host-tools/OpenApoc_GamestateSerializeGen <<EOF
+#!/bin/sh
+exec "$FOUND_QEMU" /tmp/host-tools/OpenApoc_GamestateSerializeGen.arm64 "\$@"
+EOF
+      cat > /tmp/host-tools/OpenApoc_LuaGamestateSupportGen <<EOF
+#!/bin/sh
+exec "$FOUND_QEMU" /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.arm64 "\$@"
+EOF
+      chmod +x /tmp/host-tools/OpenApoc_GamestateSerializeGen /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+      HOST_TOOLS_READY=1
+    fi
+  fi
+fi
+
+if [ "$HOST_TOOLS_READY" -eq 0 ]; then
+  declare -A SEEN=()
+  CANDIDATES=()
+  for name in cc gcc clang c++ g++ clang++; do
+    add_path "$(command -v "$name" 2>/dev/null || true)"
+  done
+  shopt -s nullglob
+  for p in \
+    /bin/cc /bin/c++ /bin/gcc /bin/g++ /bin/clang /bin/clang++ \
+    /usr/bin/cc /usr/bin/c++ /usr/bin/gcc /usr/bin/g++ /usr/bin/clang /usr/bin/clang++ \
+    /usr/bin/gcc-[0-9]* /usr/bin/g++-[0-9]* /usr/bin/clang-[0-9]* /usr/bin/clang++-[0-9]* \
+    /usr/bin/x86_64-linux-gnu-gcc /usr/bin/x86_64-linux-gnu-g++ /usr/bin/x86_64-linux-gnu-gcc-[0-9]* /usr/bin/x86_64-linux-gnu-g++-[0-9]* \
+    /usr/local/bin/cc /usr/local/bin/c++ /usr/local/bin/gcc /usr/local/bin/g++ /usr/local/bin/clang /usr/local/bin/clang++ \
+    /usr/local/bin/gcc-[0-9]* /usr/local/bin/g++-[0-9]* /usr/local/bin/clang-[0-9]* /usr/local/bin/clang++-[0-9]* \
+    /usr/lib/llvm-*/bin/clang /usr/lib/llvm-*/bin/clang++ \
+    /opt/*/bin/cc /opt/*/bin/c++ /opt/*/bin/gcc /opt/*/bin/g++ /opt/*/bin/clang /opt/*/bin/clang++; do
+    add_path "$p"
+  done
+  shopt -u nullglob
+
+  for compiler in "${CANDIDATES[@]}"; do
+    echo "$compiler" >> "$CANDIDATES_LOG"
+    : > "$LAST_NATIVE_LOG"
+    if probe_native_compiler "$compiler"; then
+      FOUND_NATIVE_CXX="$compiler"
+      if build_native_gen "$compiler" tools/code_generators/gamestate_serialize_gen/main.cpp /tmp/host-tools/OpenApoc_GamestateSerializeGen.native >>"$LAST_NATIVE_LOG" 2>&1 && \
+         build_native_gen "$compiler" tools/code_generators/luagamestate_support_gen/main.cpp /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.native >>"$LAST_NATIVE_LOG" 2>&1 && \
+         smoke_generator /tmp/host-tools/OpenApoc_GamestateSerializeGen.native && \
+         smoke_generator /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.native; then
+        ln -sf /tmp/host-tools/OpenApoc_GamestateSerializeGen.native /tmp/host-tools/OpenApoc_GamestateSerializeGen
+        ln -sf /tmp/host-tools/OpenApoc_LuaGamestateSupportGen.native /tmp/host-tools/OpenApoc_LuaGamestateSupportGen
+        HOST_TOOLS_READY=1
+        break
+      fi
+    fi
+  done
+fi
+
+if [ "$HOST_TOOLS_READY" -ne 1 ]; then
+  echo "Failed to provision code-generator host tools." >&2
+  echo "uname: $(uname -m)" >&2
+  echo "pregenerated: GS_H=${GS_H:-none} GS_CPP=${GS_CPP:-none} LUA_H=${LUA_H:-none} LUA_CPP=${LUA_CPP:-none}" >&2
+  echo "found_qemu: ${FOUND_QEMU:-none} qemu_prefix: ${QEMU_PREFIX:-none}" >&2
+  echo "found_native_compiler: ${FOUND_NATIVE_CXX:-none}" >&2
+  echo "--- discovered compiler candidates ---" >&2
+  cat "$CANDIDATES_LOG" >&2 || true
+  echo "--- arm64 generator log tail ---" >&2
+  tail -n 40 "$LAST_ARM64_LOG" >&2 || true
+  echo "--- qemu log tail ---" >&2
+  tail -n 40 "$LAST_QEMU_LOG" >&2 || true
+  echo "--- native compiler log tail ---" >&2
+  tail -n 80 "$LAST_NATIVE_LOG" >&2 || true
+  exit 1
+fi
+
+PHYSFS_DEFS=(
   -DPHYSFS_SUPPORTS_7Z=0
   -DPHYSFS_SUPPORTS_GRP=0
   -DPHYSFS_SUPPORTS_HOG=0
@@ -34,31 +258,21 @@ physfs_defs=(
   -DPHYSFS_ISO9660_LOWERCASE=1
   -DPHYSFS_ISO9660_OPENAPOC_WORKAROUND=1
 )
-physfs_srcs=(
+PHYSFS_SRCS=(
   dependencies/physfs/src/physfs.c
   dependencies/physfs/src/physfs_byteorder.c
   dependencies/physfs/src/physfs_unicode.c
   dependencies/physfs/src/physfs_platform_posix.c
   dependencies/physfs/src/physfs_platform_unix.c
-  dependencies/physfs/src/physfs_platform_windows.c
-  dependencies/physfs/src/physfs_platform_os2.c
-  dependencies/physfs/src/physfs_platform_qnx.c
   dependencies/physfs/src/physfs_archiver_dir.c
   dependencies/physfs/src/physfs_archiver_unpacked.c
-  dependencies/physfs/src/physfs_archiver_grp.c
-  dependencies/physfs/src/physfs_archiver_hog.c
-  dependencies/physfs/src/physfs_archiver_7z.c
-  dependencies/physfs/src/physfs_archiver_mvl.c
-  dependencies/physfs/src/physfs_archiver_qpak.c
-  dependencies/physfs/src/physfs_archiver_wad.c
   dependencies/physfs/src/physfs_archiver_zip.c
-  dependencies/physfs/src/physfs_archiver_slb.c
   dependencies/physfs/src/physfs_archiver_iso9660.c
   dependencies/physfs/src/physfs_archiver_vdf.c
 )
-for src in "${physfs_srcs[@]}"; do
+for src in "${PHYSFS_SRCS[@]}"; do
   obj="/tmp/physfs-build/$(basename "${src%.c}").o"
-  "${CC:-aarch64-linux-gnu-gcc}" ${CFLAGS:-} -Idependencies/physfs/src "${physfs_defs[@]}" -c "$src" -o "$obj"
+  "${TARGET_CC_ARR[@]}" "${TARGET_CFLAGS_ARR[@]}" -Idependencies/physfs/src "${PHYSFS_DEFS[@]}" -c "$src" -o "$obj"
 done
 "${AR:-aarch64-linux-gnu-ar}" rcs /tmp/physfs-prefix/lib/libphysfs.a /tmp/physfs-build/*.o
 
@@ -73,10 +287,17 @@ cmake -S . -B build -GNinja \
   -DPHYSFS_LIBRARY=/tmp/physfs-prefix/lib/libphysfs.a \
   -DPHYSFS_INCLUDE_DIR=/tmp/game/dependencies/physfs/src
 
-cmake --build build --parallel
+cmake --build build --target OpenApoc --parallel
+
+APP_BIN=build/bin/OpenApoc
+if [ ! -x "$APP_BIN" ]; then
+  APP_BIN=$(find build -type f -name OpenApoc -perm -111 -print -quit)
+fi
+[ -n "${APP_BIN:-}" ]
+[ -x "$APP_BIN" ]
 
 mkdir -p /output/package/bin /output/package/licenses
-install -Dm755 build/bin/OpenApoc /output/package/bin/OpenApoc
+install -Dm755 "$APP_BIN" /output/package/bin/OpenApoc
 
 for f in README.md README_HOTKEYS.txt portable.txt; do
   if [ -f "$f" ]; then
